@@ -17,7 +17,7 @@ import time
 import argparse
 import sys
 
-from Sensores.iot_simulator import SensorModel
+from Sensors.iot_simulator import SensorModel
 
 # ── Configuración ──────────────────────────────────────────────────
 DEFAULT_HOST    = "apidominio.proyecto1-iot-eafit.org"

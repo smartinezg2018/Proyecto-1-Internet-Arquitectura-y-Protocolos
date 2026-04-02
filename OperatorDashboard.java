@@ -5,6 +5,12 @@
  * Run:      java OperatorDashboard localhost
  *           java OperatorDashboard apidominio.proyecto1-iot-eafit.org 8080
  *
+ * Flujo:
+ *   1. Se muestra pantalla de login
+ *   2. Al presionar "Ingresar", se envia LOGIN|usuario|clave al servidor
+ *   3. Si el servidor responde OK|<rol>, se abre el dashboard principal
+ *   4. Si responde ERR|..., se muestra mensaje de error en la pantalla de login
+ *
  * No requiere dependencias externas -- solo JDK 11+
  */
 
@@ -12,6 +18,7 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
 import java.awt.*;
+import java.awt.event.*;
 import java.io.*;
 import java.net.*;
 import java.time.LocalTime;
@@ -27,18 +34,24 @@ public class OperatorDashboard {
     static final int    POLL_MS      = 2000;
     static final int    RECONECT_MS  = 5000;
 
-    // Paleta oscura (igual que el dashboard Python)
+    // Paleta oscura
     static final Color BG_DARK    = new Color(0x1e1e2e);
     static final Color BG_SURFACE = new Color(0x313244);
     static final Color BG_HEADER  = new Color(0x45475a);
     static final Color FG_TEXT    = new Color(0xcdd6f4);
     static final Color FG_GREEN   = new Color(0xa6e3a1);
     static final Color FG_RED     = new Color(0xf38ba8);
+    static final Color FG_YELLOW  = new Color(0xf9e2af);
+    static final Color ACCENT     = new Color(0x89b4fa);
 
     // -- Estado --------------------------------------------------------------
     final String   host;
     final int      port;
-    volatile boolean running = true;
+    volatile boolean running = false;
+
+    // Datos del usuario autenticado
+    String usuarioActual = "";
+    String rolActual     = "";
 
     // -- Componentes Swing ---------------------------------------------------
     JFrame            frame;
@@ -51,30 +64,16 @@ public class OperatorDashboard {
         this.port = port;
     }
 
-    // -- DNS: nunca IP hardcodeada -------------------------------------------
+    // -- DNS -----------------------------------------------------------------
     InetSocketAddress resolverHost() {
         try {
-            InetAddress addr = InetAddress.getByName(host);
-            return new InetSocketAddress(addr, port);
+            return new InetSocketAddress(InetAddress.getByName(host), port);
         } catch (UnknownHostException e) {
-            setStatus("DNS no resuelto para " + host, FG_RED);
             return null;
         }
     }
 
-    // -- Leer del socket caracter a caracter hasta \n -----------------------
-    //
-    // Por que no usar BufferedReader.readLine()?
-    //
-    // El servidor en C mantiene la conexion abierta despues de enviar la
-    // respuesta. BufferedReader.readLine() bloquea hasta recibir \n O hasta
-    // que la conexion se cierre. Como el servidor no cierra, readLine() se
-    // queda bloqueado para siempre aunque ya recibio todos los datos.
-    //
-    // Con read() caracter a caracter y setSoTimeout(5000) en el socket,
-    // la lectura termina en cuanto llega el \n que el servidor agrega a
-    // cada respuesta, sin necesidad de cerrar la conexion.
-    //
+    // -- Leer linea del socket (caracter a caracter hasta \n) ----------------
     String leerLinea(InputStream is) throws IOException {
         StringBuilder sb = new StringBuilder();
         int c;
@@ -85,39 +84,241 @@ public class OperatorDashboard {
         return sb.toString();
     }
 
-    // -- Construccion de la ventana -----------------------------------------
-    void buildUI() {
+    // ========================================================================
+    // PANTALLA DE LOGIN
+    // ========================================================================
+    void mostrarLogin() {
+        JFrame loginFrame = new JFrame("IoT Monitor - Iniciar sesion");
+        loginFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        loginFrame.setSize(400, 320);
+        loginFrame.setLocationRelativeTo(null);
+        loginFrame.setResizable(false);
+        loginFrame.getContentPane().setBackground(BG_DARK);
+        loginFrame.setLayout(new BorderLayout());
+
+        // -- Panel central con formulario ------------------------------------
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBackground(BG_DARK);
+        panel.setBorder(BorderFactory.createEmptyBorder(30, 40, 20, 40));
+
+        // Titulo
+        JLabel titulo = new JLabel("Sistema de Monitoreo IoT");
+        titulo.setFont(new Font("SansSerif", Font.BOLD, 16));
+        titulo.setForeground(FG_TEXT);
+        titulo.setAlignmentX(Component.CENTER_ALIGNMENT);
+        panel.add(titulo);
+
+        JLabel subtitulo = new JLabel("EAFIT");
+        subtitulo.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        subtitulo.setForeground(new Color(0x6c7086));
+        subtitulo.setAlignmentX(Component.CENTER_ALIGNMENT);
+        panel.add(subtitulo);
+        panel.add(Box.createVerticalStrut(24));
+
+        // Campo usuario
+        JLabel lblUsuario = new JLabel("Usuario");
+        lblUsuario.setForeground(FG_TEXT);
+        lblUsuario.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        lblUsuario.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(lblUsuario);
+        panel.add(Box.createVerticalStrut(4));
+
+        JTextField txtUsuario = new JTextField();
+        txtUsuario.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+        txtUsuario.setBackground(BG_SURFACE);
+        txtUsuario.setForeground(FG_TEXT);
+        txtUsuario.setCaretColor(FG_TEXT);
+        txtUsuario.setFont(new Font("SansSerif", Font.PLAIN, 13));
+        txtUsuario.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(BG_HEADER),
+            BorderFactory.createEmptyBorder(4, 8, 4, 8)));
+        panel.add(txtUsuario);
+        panel.add(Box.createVerticalStrut(12));
+
+        // Campo clave
+        JLabel lblClave = new JLabel("Contrasena");
+        lblClave.setForeground(FG_TEXT);
+        lblClave.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        lblClave.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(lblClave);
+        panel.add(Box.createVerticalStrut(4));
+
+        JPasswordField txtClave = new JPasswordField();
+        txtClave.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+        txtClave.setBackground(BG_SURFACE);
+        txtClave.setForeground(FG_TEXT);
+        txtClave.setCaretColor(FG_TEXT);
+        txtClave.setFont(new Font("SansSerif", Font.PLAIN, 13));
+        txtClave.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(BG_HEADER),
+            BorderFactory.createEmptyBorder(4, 8, 4, 8)));
+        panel.add(txtClave);
+        panel.add(Box.createVerticalStrut(8));
+
+        // Mensaje de error (oculto inicialmente)
+        JLabel lblError = new JLabel(" ");
+        lblError.setForeground(FG_RED);
+        lblError.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        lblError.setAlignmentX(Component.CENTER_ALIGNMENT);
+        panel.add(lblError);
+        panel.add(Box.createVerticalStrut(8));
+
+        // Boton ingresar
+        JButton btnLogin = new JButton("Ingresar");
+        btnLogin.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+        btnLogin.setBackground(ACCENT);
+        btnLogin.setForeground(BG_DARK);
+        btnLogin.setFont(new Font("SansSerif", Font.BOLD, 13));
+        btnLogin.setFocusPainted(false);
+        btnLogin.setBorderPainted(false);
+        btnLogin.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        panel.add(btnLogin);
+
+        loginFrame.add(panel, BorderLayout.CENTER);
+        loginFrame.setVisible(true);
+        txtUsuario.requestFocus();
+
+        // -- Logica del login ------------------------------------------------
+        ActionListener doLogin = e -> {
+            String usuario = txtUsuario.getText().trim();
+            String clave   = new String(txtClave.getPassword());
+
+            if (usuario.isEmpty() || clave.isEmpty()) {
+                lblError.setText("Ingresa usuario y contrasena");
+                return;
+            }
+
+            btnLogin.setEnabled(false);
+            btnLogin.setText("Verificando...");
+            lblError.setText(" ");
+
+            // Hacer el login en un hilo aparte para no bloquear la UI
+            new Thread(() -> {
+                String resultado = intentarLogin(usuario, clave);
+                SwingUtilities.invokeLater(() -> {
+                    btnLogin.setEnabled(true);
+                    btnLogin.setText("Ingresar");
+
+                    if (resultado.startsWith("OK|")) {
+                        // Login exitoso
+                        usuarioActual = usuario;
+                        rolActual     = resultado.substring(3);
+                        loginFrame.dispose();
+                        buildDashboard();
+                    } else {
+                        // Mostrar error según respuesta
+                        if (resultado.contains("UNAVAILABLE") || resultado.contains("TIMEOUT")) {
+                            lblError.setText("Servicio de autenticacion no disponible");
+                        } else {
+                            lblError.setText("Usuario o contrasena incorrectos");
+                        }
+                        txtClave.setText("");
+                        txtClave.requestFocus();
+                    }
+                });
+            }, "hilo-login").start();
+        };
+
+        btnLogin.addActionListener(doLogin);
+        // Enter en cualquier campo tambien dispara el login
+        txtUsuario.addActionListener(doLogin);
+        txtClave.addActionListener(doLogin);
+    }
+
+    // Envia LOGIN|usuario|clave al servidor y devuelve la respuesta
+    String intentarLogin(String usuario, String clave) {
+        InetSocketAddress addr = resolverHost();
+        if (addr == null) return "ERR|DNS_FAILED";
+
+        try (Socket sock = new Socket()) {
+            sock.connect(addr, 5000);
+            sock.setSoTimeout(8000);   // timeout para la respuesta del login
+
+            OutputStream out = sock.getOutputStream();
+            InputStream  in  = sock.getInputStream();
+
+            String msg = "LOGIN|" + usuario + "|" + clave + "\n";
+            out.write(msg.getBytes("UTF-8"));
+            out.flush();
+
+            return leerLinea(in).trim();
+
+        } catch (SocketTimeoutException e) {
+            return "ERR|TIMEOUT";
+        } catch (IOException e) {
+            return "ERR|CONNECTION_FAILED";
+        }
+    }
+
+    // ========================================================================
+    // DASHBOARD PRINCIPAL (solo se muestra tras login exitoso)
+    // ========================================================================
+    void buildDashboard() {
+        running = true;
+
         frame = new JFrame("EAFIT IoT Monitor");
         frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
-        frame.addWindowListener(new java.awt.event.WindowAdapter() {
-            public void windowClosing(java.awt.event.WindowEvent e) {
+        frame.addWindowListener(new WindowAdapter() {
+            public void windowClosing(WindowEvent e) {
                 running = false;
                 frame.dispose();
             }
         });
-        frame.setSize(820, 560);
+        frame.setSize(860, 580);
         frame.setLocationRelativeTo(null);
         frame.getContentPane().setBackground(BG_DARK);
         frame.setLayout(new BorderLayout(0, 8));
 
-        // -- Titulo + estado -------------------------------------------------
-        JPanel topPanel = new JPanel();
-        topPanel.setLayout(new BoxLayout(topPanel, BoxLayout.Y_AXIS));
+        // -- Barra superior --------------------------------------------------
+        JPanel topPanel = new JPanel(new BorderLayout());
         topPanel.setBackground(BG_DARK);
-        topPanel.setBorder(BorderFactory.createEmptyBorder(14, 14, 4, 14));
+        topPanel.setBorder(BorderFactory.createEmptyBorder(12, 16, 4, 16));
 
         JLabel title = new JLabel("Sistema de Monitoreo IoT - EAFIT");
-        title.setFont(new Font("SansSerif", Font.BOLD, 16));
+        title.setFont(new Font("SansSerif", Font.BOLD, 15));
         title.setForeground(FG_TEXT);
-        title.setAlignmentX(Component.CENTER_ALIGNMENT);
-        topPanel.add(title);
-        topPanel.add(Box.createVerticalStrut(4));
+        topPanel.add(title, BorderLayout.WEST);
 
+        // Info del usuario en la derecha
+        JPanel userInfo = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        userInfo.setBackground(BG_DARK);
+
+        JLabel lblUsuarioInfo = new JLabel(usuarioActual);
+        lblUsuarioInfo.setFont(new Font("SansSerif", Font.BOLD, 12));
+        lblUsuarioInfo.setForeground(ACCENT);
+
+        JLabel lblRolInfo = new JLabel("[" + rolActual + "]");
+        lblRolInfo.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        lblRolInfo.setForeground(new Color(0x6c7086));
+
+        JButton btnLogout = new JButton("Cerrar sesion");
+        btnLogout.setBackground(BG_SURFACE);
+        btnLogout.setForeground(FG_RED);
+        btnLogout.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        btnLogout.setFocusPainted(false);
+        btnLogout.setBorderPainted(false);
+        btnLogout.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        btnLogout.addActionListener(e -> {
+            running = false;
+            frame.dispose();
+            // Volver a la pantalla de login
+            SwingUtilities.invokeLater(() -> new OperatorDashboard(host, port).mostrarLogin());
+        });
+
+        userInfo.add(lblUsuarioInfo);
+        userInfo.add(lblRolInfo);
+        userInfo.add(btnLogout);
+        topPanel.add(userInfo, BorderLayout.EAST);
+
+        // Status de conexion
         statusLabel = new JLabel("Conectando...");
-        statusLabel.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        statusLabel.setFont(new Font("SansSerif", Font.PLAIN, 10));
         statusLabel.setForeground(FG_GREEN);
-        statusLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        topPanel.add(statusLabel);
+        JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        statusPanel.setBackground(BG_DARK);
+        statusPanel.add(statusLabel);
+        topPanel.add(statusPanel, BorderLayout.SOUTH);
 
         frame.add(topPanel, BorderLayout.NORTH);
 
@@ -141,7 +342,6 @@ public class OperatorDashboard {
         table.getTableHeader().setForeground(FG_TEXT);
         table.getTableHeader().setFont(new Font("SansSerif", Font.BOLD, 13));
 
-        // Renderer: centra y colorea rojo filas con "Falla"
         table.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
             public Component getTableCellRendererComponent(
                     JTable t, Object value, boolean sel, boolean focus, int row, int col) {
@@ -174,7 +374,7 @@ public class OperatorDashboard {
         alertTitle.setForeground(FG_RED);
         alertPanel.add(alertTitle, BorderLayout.NORTH);
 
-        alertsArea = new JTextArea(6, 0);
+        alertsArea = new JTextArea(5, 0);
         alertsArea.setEditable(false);
         alertsArea.setBackground(BG_DARK);
         alertsArea.setForeground(FG_RED);
@@ -188,9 +388,13 @@ public class OperatorDashboard {
 
         frame.add(alertPanel, BorderLayout.SOUTH);
         frame.setVisible(true);
+
+        // Arrancar hilos de datos
+        startPolling();
+        startAlertListener();
     }
 
-    // -- Helpers thread-safe ------------------------------------------------
+    // -- Helpers thread-safe -------------------------------------------------
     void setStatus(String msg, Color color) {
         SwingUtilities.invokeLater(() -> {
             statusLabel.setText(msg);
@@ -203,7 +407,7 @@ public class OperatorDashboard {
         for (String entry : data.split(";")) {
             entry = entry.trim();
             if (entry.isEmpty() || entry.equals("EMPTY")) continue;
-            String[] partes = entry.split(":", 4);  // limite 4: el timestamp HH:mm:ss contiene ":" y sin limite da 6 partes en vez de 4
+            String[] partes = entry.split(":", 4);  // limite 4: timestamp HH:mm:ss tiene ":"
             if (partes.length == 4) {
                 filas.add(partes);
             } else if (partes.length == 2) {
@@ -225,14 +429,12 @@ public class OperatorDashboard {
         });
     }
 
-    // -- Hilo 1: GET_STATE cada 2 segundos ----------------------------------
+    // -- Hilo 1: GET_STATE cada 2 segundos -----------------------------------
     void startPolling() {
         Thread t = new Thread(() -> {
             while (running) {
-                try {
-                    InetSocketAddress addr = resolverHost();
-                    if (addr == null) { Thread.sleep(RECONECT_MS); continue; }
-
+                InetSocketAddress addr = resolverHost();
+                if (addr != null) {
                     try (Socket sock = new Socket()) {
                         sock.connect(addr, 5000);
                         sock.setSoTimeout(5000);
@@ -251,16 +453,16 @@ public class OperatorDashboard {
                                 + ":" + port + "  " + ts, FG_GREEN);
                             actualizarTabla(data);
                         }
+                    } catch (SocketTimeoutException e) {
+                        setStatus("Timeout - servidor no responde", FG_RED);
+                    } catch (ConnectException e) {
+                        setStatus("Sin conexion al servidor", FG_RED);
+                    } catch (Exception e) {
+                        setStatus("Error: " + e.getMessage(), FG_RED);
                     }
-
-                } catch (SocketTimeoutException e) {
-                    setStatus("Timeout - servidor no responde", FG_RED);
-                } catch (ConnectException e) {
-                    setStatus("Sin conexion al servidor", FG_RED);
-                } catch (Exception e) {
-                    setStatus("Error: " + e.getMessage(), FG_RED);
+                } else {
+                    setStatus("DNS no resuelto para " + host, FG_RED);
                 }
-
                 try { Thread.sleep(POLL_MS); } catch (InterruptedException ignored) {}
             }
         }, "hilo-polling");
@@ -268,7 +470,7 @@ public class OperatorDashboard {
         t.start();
     }
 
-    // -- Hilo 2: SUBSCRIBE - alertas push -----------------------------------
+    // -- Hilo 2: SUBSCRIBE - alertas push ------------------------------------
     void startAlertListener() {
         Thread t = new Thread(() -> {
             while (running) {
@@ -277,7 +479,6 @@ public class OperatorDashboard {
                     try { Thread.sleep(RECONECT_MS); } catch (InterruptedException ignored) {}
                     continue;
                 }
-
                 try (Socket sock = new Socket()) {
                     sock.connect(addr, 5000);
 
@@ -287,7 +488,6 @@ public class OperatorDashboard {
                     out.write("SUBSCRIBE\n".getBytes("UTF-8"));
                     out.flush();
 
-                    // Leer ACK con timeout corto
                     sock.setSoTimeout(5000);
                     String ack = leerLinea(in);
                     if (!ack.contains("OK")) {
@@ -295,20 +495,17 @@ public class OperatorDashboard {
                         continue;
                     }
 
-                    // Esperar alertas push sin timeout (conexion persistente)
                     sock.setSoTimeout(0);
                     while (running) {
                         String linea = leerLinea(in);
-                        if (linea.isEmpty()) break;  // servidor cerro la conexion
+                        if (linea.isEmpty()) break;
                         if (linea.startsWith("ALERT|")) {
                             mostrarAlerta(linea.substring(6));
                         }
                     }
-
                 } catch (Exception e) {
                     // reconectar silenciosamente
                 }
-
                 try { Thread.sleep(RECONECT_MS); } catch (InterruptedException ignored) {}
             }
         }, "hilo-alertas");
@@ -316,16 +513,7 @@ public class OperatorDashboard {
         t.start();
     }
 
-    // -- Arrancar -----------------------------------------------------------
-    public void start() {
-        SwingUtilities.invokeLater(() -> {
-            buildUI();
-            startPolling();
-            startAlertListener();
-        });
-    }
-
-    // -- main ---------------------------------------------------------------
+    // -- main ----------------------------------------------------------------
     public static void main(String[] args) {
         String host = DEFAULT_HOST;
         int    port = DEFAULT_PORT;
@@ -338,8 +526,14 @@ public class OperatorDashboard {
             }
         }
 
+        final String fHost = host;
+        final int    fPort = port;
+
         System.out.println("=== EAFIT IoT Monitor ===");
         System.out.println("Host: " + host + "  Puerto: " + port);
-        new OperatorDashboard(host, port).start();
+
+        SwingUtilities.invokeLater(() ->
+            new OperatorDashboard(fHost, fPort).mostrarLogin()
+        );
     }
 }

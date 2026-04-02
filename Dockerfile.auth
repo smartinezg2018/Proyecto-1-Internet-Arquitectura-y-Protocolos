@@ -1,0 +1,22 @@
+# ── Etapa 1: compilar ─────────────────────────────────────────────
+FROM eclipse-temurin:17-jdk-alpine AS builder
+
+WORKDIR /build
+COPY AuthServer.java .
+RUN javac AuthServer.java
+
+# ── Etapa 2: imagen final solo con JRE (más liviana) ──────────────
+FROM eclipse-temurin:17-jre-alpine
+
+WORKDIR /app
+
+# Copiar los .class compilados
+COPY --from=builder /build/AuthServer*.class .
+
+# Archivo de usuarios — se puede montar como volumen para editar
+# usuarios sin reconstruir la imagen
+COPY users.json .
+
+EXPOSE 9000
+
+CMD ["java", "AuthServer", "9000", "users.json"]

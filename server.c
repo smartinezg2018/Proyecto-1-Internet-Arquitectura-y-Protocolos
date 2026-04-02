@@ -23,7 +23,8 @@
 #include <sys/types.h>    /* debe ir antes de socket.h y netdb.h */
 #include <sys/socket.h>   /* debe ir antes de netdb.h */
 #include <netdb.h>        /* struct addrinfo, getaddrinfo, freeaddrinfo */
-#include <arpa/inet.h>    /* inet_ntop, htons, INADDR_ANY */
+#include <arpa/inet.h>
+#include <sys/time.h>    /* struct timeval para SO_RCVTIMEO */    /* inet_ntop, htons, INADDR_ANY */
 
 /* ─── Constantes ─────────────────────────────────────────────── */
 #define MAX_SENSORS   50
@@ -158,7 +159,7 @@ void check_thresholds(const char *sensor_id, const char *tipo, const char *valor
 
 /* ─── Unidad segun tipo de sensor ─────────────────────────────────── */
 const char *unidad_de_tipo(const char *tipo) {
-    if (strcmp(tipo, "TEMP") == 0) return "°C";
+    if (strcmp(tipo, "TEMP") == 0) return "C";
     if (strcmp(tipo, "VIBR") == 0) return "mm/s";
     if (strcmp(tipo, "ENER") == 0) return "kWh";
     if (strcmp(tipo, "HUM")  == 0) return "%";
@@ -291,7 +292,12 @@ void handle_login(const char *msg, char *resp) {
     strncpy(tmp, msg, sizeof(tmp) - 1);
 
     /* Resolver nombre de dominio del servicio de auth */
-    const char *auth_host = "auth.proyecto1-iot-eafit.org";
+    /* AUTH_HOST puede setearse como variable de entorno.
+     * Prioridad: variable de entorno > valor por defecto.
+     * En docker-compose se define como "auth-service" (nombre del contenedor).
+     * En desarrollo local se puede usar "localhost". */
+    const char *auth_host_env = getenv("AUTH_HOST");
+    const char *auth_host = auth_host_env ? auth_host_env : "auth-service";
     const char *auth_port = "9000";
 
     struct addrinfo hints, *res;
@@ -314,28 +320,158 @@ void handle_login(const char *msg, char *resp) {
     }
     freeaddrinfo(res);
 
-    /* Reenviar el mensaje LOGIN tal como llegó */
-    send(auth_fd, tmp, strlen(tmp), 0);
+    /* Timeout de 5s en recv para evitar que el hilo se bloquee indefinidamente
+     * si el AuthServer no responde (p.ej. se cayó o la conexión se perdió) */
+    struct timeval tv = {5, 0};   /* 5 segundos */
+    setsockopt(auth_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* Reenviar el mensaje LOGIN con \n como delimitador */
+    char msg_nl[BUF_SIZE + 2];
+    snprintf(msg_nl, sizeof(msg_nl), "%s\n", tmp);
+    send(auth_fd, msg_nl, strlen(msg_nl), 0);
+
+    /* Leer respuesta hasta \n o timeout */
     char auth_resp[256] = {0};
-    recv(auth_fd, auth_resp, sizeof(auth_resp) - 1, 0);
+    int  ar_len = 0;
+    char ch;
+    while (ar_len < (int)sizeof(auth_resp) - 1) {
+        int r = recv(auth_fd, &ch, 1, 0);
+        if (r <= 0) break;          /* timeout, error o conexión cerrada */
+        if (ch == '\n') break;
+        if (ch != '\r') auth_resp[ar_len++] = ch;
+    }
     close(auth_fd);
 
+    if (ar_len == 0) {
+        strcpy(resp, "ERR|AUTH_TIMEOUT");
+        return;
+    }
     strncpy(resp, auth_resp, BUF_SIZE - 1);
 }
 
-/* ─── HTTP básico ─────────────────────────────────────────────── */
-void handle_http(int sock, const char *ip, int port) {
-    /* Construir body con el estado actual de los sensores */
-    char table_rows[BUF_SIZE] = {0};
+/* ─── Base64 decode (para HTTP Basic Auth) ────────────────────── */
+static const char b64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+int b64_decode(const char *in, char *out, int out_sz) {
+    int len = strlen(in), out_len = 0;
+    for (int i = 0; i < len - 3 && out_len < out_sz - 1; i += 4) {
+        int v = 0;
+        for (int j = 0; j < 4; j++) {
+            char *p = strchr(b64_table, in[i+j]);
+            v = (v << 6) | (p ? (int)(p - b64_table) : 0);
+        }
+        if (out_len < out_sz - 1) out[out_len++] = (v >> 16) & 0xFF;
+        if (in[i+2] != '=' && out_len < out_sz - 1) out[out_len++] = (v >>  8) & 0xFF;
+        if (in[i+3] != '=' && out_len < out_sz - 1) out[out_len++] = (v >>  0) & 0xFF;
+    }
+    out[out_len] = '\0';
+    return out_len;
+}
+
+/* ─── HTTP 401 Unauthorized ───────────────────────────────────── */
+void http_send_401(int sock) {
+    const char *body =
+        "<!DOCTYPE html><html><body>"
+        "<h2>401 - Acceso no autorizado</h2>"
+        "<p>Se requieren credenciales validas para acceder al monitor IoT.</p>"
+        "</body></html>";
+    char header[512];
+    snprintf(header, sizeof(header),
+        "HTTP/1.1 401 Unauthorized\r\n"
+        "WWW-Authenticate: Basic realm=\"IoT Monitor\"\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n", strlen(body));
+    send(sock, header, strlen(header), 0);
+    send(sock, body, strlen(body), 0);
+}
+
+/* ─── HTTP 403 Forbidden ──────────────────────────────────────── */
+void http_send_403(int sock) {
+    const char *body =
+        "<!DOCTYPE html><html><body>"
+        "<h2>403 - Credenciales invalidas</h2>"
+        "<p>Usuario o contrasena incorrectos.</p>"
+        "</body></html>";
+    char header[512];
+    snprintf(header, sizeof(header),
+        "HTTP/1.1 403 Forbidden\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n", strlen(body));
+    send(sock, header, strlen(header), 0);
+    send(sock, body, strlen(body), 0);
+}
+
+/* ─── HTTP básico con autenticación ───────────────────────────── */
+/*
+ * Implementa HTTP Basic Authentication (RFC 7617).
+ * Flujo:
+ *   1. Browser pide GET /  sin credenciales
+ *   2. Servidor responde 401 con WWW-Authenticate: Basic
+ *   3. Browser muestra popup nativo de usuario/clave
+ *   4. Browser reenvía GET / con Authorization: Basic <base64(user:pass)>
+ *   5. Servidor decodifica base64, consulta auth externo via handle_login
+ *   6. Si OK  → sirve la pagina de metricas (200)
+ *      Si ERR → responde 403 Forbidden
+ */
+void handle_http(int sock, const char *request, const char *ip, int port) {
+    /* Buscar header Authorization en el request completo */
+    const char *auth_header = strstr(request, "Authorization: Basic ");
+    if (!auth_header) {
+        http_send_401(sock);
+        log_event(ip, port, "GET / HTTP/1.1", "401 Unauthorized");
+        return;
+    }
+
+    /* Extraer el token base64 (termina en \r o \n o espacio) */
+    auth_header += strlen("Authorization: Basic ");
+    char b64_token[512] = {0};
+    int i = 0;
+    while (auth_header[i] && auth_header[i] != '\r' && auth_header[i] != '\n'
+           && i < (int)sizeof(b64_token) - 1) {
+        b64_token[i] = auth_header[i];
+        i++;
+    }
+
+    /* Decodificar base64 → "usuario:clave" */
+    char credentials[256] = {0};
+    b64_decode(b64_token, credentials, sizeof(credentials));
+
+    /* Separar usuario y clave en el primer ":" */
+    char *sep = strchr(credentials, ':');
+    if (!sep) { http_send_403(sock); return; }
+    *sep = '\0';
+    char *usuario = credentials;
+    char *clave   = sep + 1;
+
+    /* Consultar servicio de autenticación externo */
+    char login_msg[512], auth_resp[256];
+    snprintf(login_msg, sizeof(login_msg), "LOGIN|%s|%s", usuario, clave);
+    handle_login(login_msg, auth_resp);
+
+    if (strncmp(auth_resp, "OK", 2) != 0) {
+        http_send_403(sock);
+        log_event(ip, port, "GET / HTTP/1.1", "403 Forbidden");
+        return;
+    }
+
+    /* Credenciales válidas: extraer rol de la respuesta "OK|<rol>" */
+    char rol[64] = "operador";
+    char *pipe = strchr(auth_resp, '|');
+    if (pipe) strncpy(rol, pipe + 1, sizeof(rol) - 1);
+
+    /* Construir tabla de sensores */
+    char table_rows[BUF_SIZE] = {0};
     pthread_mutex_lock(&sensors_lock);
-    for (int i = 0; i < sensor_count; i++) {
+    for (int j = 0; j < sensor_count; j++) {
         char row[256];
         snprintf(row, sizeof(row),
             "<tr><td>%s</td><td>%s</td><td>%s %s</td><td>%s</td></tr>\n",
-            sensors[i].id, sensors[i].tipo,
-            sensors[i].valor, sensors[i].unidad,
-            sensors[i].timestamp);
+            sensors[j].id, sensors[j].tipo,
+            sensors[j].valor, sensors[j].unidad,
+            sensors[j].timestamp);
         strncat(table_rows, row, sizeof(table_rows) - strlen(table_rows) - 1);
     }
     pthread_mutex_unlock(&sensors_lock);
@@ -344,18 +480,23 @@ void handle_http(int sock, const char *ip, int port) {
     int body_len = snprintf(body, sizeof(body),
         "<!DOCTYPE html><html><head>"
         "<meta charset='utf-8'>"
+        "<meta http-equiv='refresh' content='5'>"
         "<title>IoT Monitor</title>"
-        "<style>body{font-family:sans-serif;margin:2em}"
+        "<style>body{font-family:sans-serif;margin:2em;background:#1e1e2e;color:#cdd6f4}"
         "table{border-collapse:collapse;width:100%%}"
-        "th,td{border:1px solid #ccc;padding:8px;text-align:left}"
-        "th{background:#2c3e50;color:#fff}</style>"
-        "</head><body>"
-        "<h1>Sistema de Monitoreo IoT — EAFIT</h1>"
-        "<p>Sensores registrados: <strong>%d</strong></p>"
+        "th,td{border:1px solid #45475a;padding:10px;text-align:left}"
+        "th{background:#313244}h1{color:#cdd6f4}"
+        ".badge{background:#313244;padding:4px 10px;border-radius:4px;font-size:0.85em}"
+        "</style></head><body>"
+        "<h1>Sistema de Monitoreo IoT</h1>"
+        "<p>Usuario: <span class='badge'>%s</span> "
+        "Rol: <span class='badge'>%s</span> "
+        "Sensores: <strong>%d</strong> "
+        "<small style='color:#6c7086'>(recarga automatica cada 5s)</small></p>"
         "<table><tr><th>ID</th><th>Tipo</th><th>Valor</th><th>Ultima lectura</th></tr>"
         "%s"
         "</table></body></html>",
-        sensor_count, table_rows);
+        usuario, rol, sensor_count, table_rows);
 
     char header[512];
     snprintf(header, sizeof(header),
@@ -418,7 +559,7 @@ void *handle_client(void *arg) {
 
         /* ── HTTP ── */
         if (strncmp(buffer, "GET /", 5) == 0 || strncmp(buffer, "GET H", 5) == 0) {
-            handle_http(ctx->socket, ip, port);
+            handle_http(ctx->socket, buffer, ip, port);
             break;  /* HTTP/1.0 cierra tras la respuesta */
         }
         /* ── REGISTER ── */

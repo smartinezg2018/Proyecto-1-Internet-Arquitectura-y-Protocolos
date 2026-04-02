@@ -1,0 +1,54 @@
+# docker-compose.yml — Orquesta el servidor IoT y el servicio de autenticación
+#
+# Uso:
+#   docker-compose up --build        # construir y levantar todo
+#   docker-compose up -d             # levantar en background
+#   docker-compose logs -f           # ver logs de ambos servicios
+#   docker-compose down              # detener y eliminar contenedores
+#
+# Los dos servicios se comunican por la red interna "iot-net".
+# El servidor C resuelve "auth-service" por DNS interno de Docker,
+# que apunta al contenedor del AuthServer en el puerto 9000.
+# Esto satisface el requisito de resolución de nombres sin IPs hardcodeadas.
+
+services:
+
+  # ── Servidor central IoT (C) ─────────────────────────────────────
+  iot-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iot-monitor
+    ports:
+      - "8080:8080"       # expuesto al exterior para sensores, operadores y browser
+    volumes:
+      - ./logs:/app/logs  # los logs persisten fuera del contenedor
+    networks:
+      - iot-net
+    environment:
+      - AUTH_HOST=auth-service   # nombre DNS interno de Docker para el auth
+    depends_on:
+      - auth-service      # esperar a que el auth esté listo antes de arrancar
+    restart: unless-stopped
+
+  # ── Servicio de autenticación (Java) ─────────────────────────────
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.auth
+    container_name: iot-auth
+    # Puerto 9000 NO expuesto al exterior — solo accesible dentro de iot-net.
+    # El servidor C lo alcanza por nombre "auth-service:9000".
+    # Esto es una medida de seguridad: nadie externo puede consultar el auth.
+    expose:
+      - "9000"
+    volumes:
+      - ./users.json:/app/users.json  # montar users.json para editar sin rebuild
+    networks:
+      - iot-net
+    restart: unless-stopped
+
+# ── Red interna entre servicios ───────────────────────────────────
+networks:
+  iot-net:
+    driver: bridge
