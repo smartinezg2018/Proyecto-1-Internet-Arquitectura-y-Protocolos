@@ -3,3 +3,5 @@
 proyecto1-iot-eafit.pem
 *.txt
 *.o
+*.log
+*.class
