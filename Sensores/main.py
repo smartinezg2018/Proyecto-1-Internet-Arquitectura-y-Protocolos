@@ -1,4 +1,4 @@
-from sensores import Sensores
+from Sensores.iot_simulator import Sensores
 
 sens = Sensores()
 
