@@ -1,0 +1,1 @@
+ssh -i "proyecto1-iot-eafit.pem" ubuntu@ec2-54-164-156-148.compute-1.amazonaws.com

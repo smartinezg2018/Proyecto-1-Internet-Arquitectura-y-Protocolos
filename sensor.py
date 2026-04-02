@@ -9,6 +9,7 @@ def simulate():
                     s.connect(('localhost', 8080))
                     val = round(random.uniform(10, 50), 2)
                     msg = f"DATA|{s_id}|{val}"
+                    print(msg)
                     s.sendall(msg.encode())
             except: pass
         time.sleep(3)
