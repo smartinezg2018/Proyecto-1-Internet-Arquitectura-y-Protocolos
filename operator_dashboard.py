@@ -15,7 +15,7 @@ import time
 import argparse
 import sys
 
-DEFAULT_HOST = "apidominio.proyecto1-iot-eafit.org"
+DEFAULT_HOST = "eafit-internet-proyecto1.work.gd"
 DEFAULT_PORT = 8080
 
 

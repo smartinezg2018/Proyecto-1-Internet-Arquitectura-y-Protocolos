@@ -20,7 +20,7 @@ import sys
 from Sensors.iot_simulator import SensorModel
 
 # ── Configuración ──────────────────────────────────────────────────
-DEFAULT_HOST    = "apidominio.proyecto1-iot-eafit.org"
+DEFAULT_HOST    = "eafit-internet-proyecto1.work.gd"
 DEFAULT_PORT    = 8080
 INTERVALO_SEG   = 3       # segundos entre mediciones
 RECONECTAR_SEG  = 5       # espera antes de reintentar conexión
