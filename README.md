@@ -11,7 +11,7 @@ Sistema de monitoreo IoT distribuido desplegado en AWS, compuesto por un servido
 
 ```
                         DNS
-              (apidominio.proyecto1-iot-eafit.org)
+              (eafit-internet-proyecto1.work.gd)
                            │
               ┌────────────▼────────────┐
               │        AWS EC2          │
@@ -311,31 +311,18 @@ docker compose logs -f iot-server
 docker compose logs -f auth-service
 ```
 
-### 6. Configurar DNS
-
-Usando un proveedor DNS gratuito (FreeDNS, No-IP, DuckDNS):
-
-1. Crear una cuenta y registrar un subdominio.
-2. Crear un registro tipo **A** apuntando a la IP pública de la EC2.
-3. Verificar resolución:
-
-```bash
-nslookup apidominio.proyecto1-iot-eafit.org
-ping apidominio.proyecto1-iot-eafit.org
-```
-
-### 7. Conectar clientes al servidor en la nube
+### 6. Conectar clientes al servidor en la nube
 
 ```bash
 # Sensores
-python3 iot_clients.py --host apidominio.proyecto1-iot-eafit.org
+python3 iot_clients.py --host eafit-internet-proyecto1.work.gd
 
 # Dashboard Java
-java OperatorDashboard apidominio.proyecto1-iot-eafit.org 8080
+java OperatorDashboard eafit-internet-proyecto1.work.gd 8080
 
 # Dashboard Python
-python3 operator_dashboard.py --host apidominio.proyecto1-iot-eafit.org
+python3 operator_dashboard.py --host eafit-internet-proyecto1.work.gd
 
 # Interfaz web
-# Abrir en el browser: http://apidominio.proyecto1-iot-eafit.org:8080
+# Abrir en el browser: http://eafit-internet-proyecto1.work.gd:8080
 ```

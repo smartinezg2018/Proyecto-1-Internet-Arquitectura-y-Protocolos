@@ -3,7 +3,7 @@
  *
  * Compile:  javac OperatorDashboard.java
  * Run:      java OperatorDashboard localhost
- *           java OperatorDashboard apidominio.proyecto1-iot-eafit.org 8080
+ *           java OperatorDashboard eafit-internet-proyecto1.work.gd 8080
  *
  * Flujo:
  *   1. Se muestra pantalla de login
@@ -29,7 +29,7 @@ import java.util.List;
 public class OperatorDashboard {
 
     // -- Configuracion -------------------------------------------------------
-    static final String DEFAULT_HOST = "apidominio.proyecto1-iot-eafit.org";
+    static final String DEFAULT_HOST = "eafit-internet-proyecto1.work.gd";
     static final int    DEFAULT_PORT = 8080;
     static final int    POLL_MS      = 2000;
     static final int    RECONECT_MS  = 5000;
