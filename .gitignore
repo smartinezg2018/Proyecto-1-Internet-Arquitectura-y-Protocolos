@@ -4,4 +4,5 @@
 *.txt
 *.o
 *.log
+*.class
 server
